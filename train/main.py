@@ -1,4 +1,5 @@
 import os
+import sys
 from argparse import ArgumentParser
 from collections import OrderedDict
 from functools import partial
@@ -12,9 +13,11 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms, models
 
+# Add the project root to the Python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from train.dataset import CombinedDataset
 from train.utils import save_checkpoint, load_checkpoint, FocalLoss, optimizer_to
-
 
 def resnet50(pretrained=False):
     model = models.resnet50(pretrained=pretrained)
@@ -42,7 +45,6 @@ def resnet50(pretrained=False):
 
     return model
 
-
 def train():
     parser = ArgumentParser("Train models.")
     parser.add_argument("--image_dir", type=str, required=True,
@@ -50,10 +52,10 @@ def train():
     parser.add_argument("--model_dir", default=None, type=str, required=True, help="Directory to save the models")
     parser.add_argument("--warmup_model_dir", default=None, type=str, help="Model directory to start the training from")
     parser.add_argument("--n_samples", type=int, default=None, help="Number of samples to train on")
-    parser.add_argument("--batch_size", type=int, default=256, help="Batch size")
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size")  # Reduced batch size
     parser.add_argument("--epochs", type=int, default=10, help="Number of epochs")
     parser.add_argument("--loss", type=str, default="bce", help="Loss function. bce or focal")
-    parser.add_argument("--num_workers", type=int, default=12, help="Number of workers")
+    parser.add_argument("--num_workers", type=int, default=4, help="Number of workers")  # Reduced number of workers
     parser.add_argument("--learning_rate", type=float, default=0.001, help="Learning rate")
     parser.add_argument("--eval", action="store_true", default=False, help="Evaluate the test set.")
     args = parser.parse_args()
@@ -78,7 +80,6 @@ def train():
                 os.path.join(train_dir, "negative_samples.csv"),
                 n_samples=args.n_samples,
                 label_ratio=0.5,
-                data_ratio=[0.25, 0.25, 0.25, 0.25],
                 transform=transforms.Compose(
                     [
                         transforms.Resize(256),
@@ -102,7 +103,6 @@ def train():
                 os.path.join(validation_dir, "positive_samples.csv"),
                 os.path.join(validation_dir, "negative_samples.csv"),
                 label_ratio=0.5,
-                data_ratio=[0.25, 0.25, 0.25, 0.25],
                 transform=transforms.Compose([
                     transforms.Resize(256),
                     transforms.ToTensor(),
@@ -119,7 +119,6 @@ def train():
 
     model = resnet50(pretrained=False)
 
-    # writer.add_graph(model, torch.rand([1, 3, 224, 224]))
     start_epoch = 1
     if args.loss == "bce":
         criterion = nn.BCEWithLogitsLoss()
@@ -146,16 +145,11 @@ def train():
 
     model.to(device)
     optimizer_to(optimizer, device)
-    # print(f"Initial values: start epoch: {start_epoch + 1}, best_f1: {best_f1:.3f}, best_acc: {best_acc:.3f}")
 
     if args.eval:
-        # Load the model checkpoint
-        # checkpoint = torch.load(os.path.join(args.model_dir, "checkpoint-best.pth.tar"))
-        # model.load_state_dict(checkpoint["state_dict"])
-
-        acc_metric = torchmetrics.Accuracy().to(device)
-        f1_metric = torchmetrics.F1().to(device)
-        cf_metric = torchmetrics.ConfusionMatrix(num_classes=2).to(device)
+        acc_metric = torchmetrics.classification.BinaryAccuracy().to(device)
+        f1_metric = torchmetrics.classification.BinaryF1Score().to(device)
+        cf_metric = torchmetrics.classification.BinaryConfusionMatrix().to(device)
 
         model.eval()
         all_y = []
@@ -172,7 +166,6 @@ def train():
                 acc = acc_metric(pred_labels, labels)
                 f1 = f1_metric(pred_labels, labels)
                 cf = cf_metric(pred_labels, labels)
-                # print(f"Current batch acc: {acc}")
         np.save(os.path.join(args.model_dir, 'y'), np.array(all_y))
         np.save(os.path.join(args.model_dir, 'y_pred'), np.array(all_pred))
         np.save(os.path.join(args.model_dir, 'indices'), np.array(indices))
@@ -182,25 +175,20 @@ def train():
         np.save(os.path.join(args.model_dir, 'cf'), test_cf)
         print(f"Test accuracy: {test_accuracy}\nTest F1: {test_f1}\nConfusion matrix: {test_cf}")
 
-        # Reset metrics
         acc_metric.reset()
         f1_metric.reset()
         cf_metric.reset()
         return
 
-    for epoch in range(start_epoch + 1, start_epoch + 1 + args.epochs + 1):  # loop over the dataset multiple times
-        train_f1_metric = torchmetrics.F1().to(device)
-        train_acc_metric = torchmetrics.Accuracy().to(device)
+    for epoch in range(start_epoch + 1, start_epoch + 1 + args.epochs + 1):
+        train_f1_metric = torchmetrics.classification.BinaryF1Score().to(device)
+        train_acc_metric = torchmetrics.classification.BinaryAccuracy().to(device)
 
         running_acc, running_f1 = 0., 0.
         epoch_loss, running_loss = 0., 0.
         model.train()
         for i, (images, labels) in enumerate(loaders['train'], 0):
             images, labels = images.to(device), labels.to(torch.float).to(device).unsqueeze(1)
-            # add to tensorboard
-            # grid = torchvision.utils.make_grid(images[:8])
-            # writer.add_image('train/images', grid, epoch)
-            # writer.add_graph(model, inputs)
 
             optimizer.zero_grad()
             outputs = model(images)
@@ -225,22 +213,18 @@ def train():
         train_acc = train_acc_metric.compute()
         train_f1 = train_f1_metric.compute()
 
-        # reset
         train_f1_metric.reset()
         train_acc_metric.reset()
 
         print("Validating...")
         model.eval()
 
-        val_acc_metric = torchmetrics.Accuracy().to(device)
-        val_f1_metric = torchmetrics.F1().to(device)
+        val_acc_metric = torchmetrics.classification.BinaryAccuracy().to(device)
+        val_f1_metric = torchmetrics.classification.BinaryF1Score().to(device)
         val_loss = 0.0
         with torch.no_grad():
             for i, (images, labels) in enumerate(loaders['valid'], 0):
                 images, labels = images.to(device), labels.to(torch.float).to(device).unsqueeze(1)
-                # add to tensorboard
-                # grid = torchvision.utils.make_grid(images[:8])
-                # writer.add_image('validation/images', grid, epoch)
 
                 outputs = model(images)
                 loss = criterion(outputs, labels)
@@ -260,12 +244,13 @@ def train():
 
         val_acc_metric.reset()
         val_f1_metric.reset()
-        # Save checkpoint if is a new best
+
+        state_dict = model.module.state_dict() if hasattr(model, 'module') else model.state_dict()
         save_checkpoint(
             {
                 'epoch': epoch,
                 'optimizer': optimizer.state_dict(),
-                'state_dict': model.module.state_dict(),
+                'state_dict': state_dict,
                 'loss': val_loss,
                 'best_f1': best_f1,
                 'best_acc': best_acc
@@ -281,7 +266,6 @@ def train():
             f'\nBest:               Acc: {best_acc:.3f}, F1: {best_f1:.3f}'
         )
 
-        # add to tensorboard
         writer.add_scalar("train/loss", train_loss, epoch)
         writer.add_scalar("train/accuracy", train_acc, epoch)
         writer.add_scalar("train/f1", train_f1, epoch)
@@ -299,7 +283,6 @@ def train():
         writer.flush()
 
     print('Finished Training.')
-
 
 if __name__ == '__main__':
     train()
