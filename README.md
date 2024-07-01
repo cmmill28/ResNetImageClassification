@@ -7,5 +7,5 @@
 - Torchvision
 
 ## Train and Evaluate
-- `./train.sh` - Train the model by increasing the training set size gradually.
+- `python train/main.py --image_dir dataset --model_dir models --epochs 10` - Train the model
 - `python eval_image.py` - To evaluate images. See the output of `python eval_image.py --help` for arguments.
